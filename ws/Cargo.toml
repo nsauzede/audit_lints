@@ -1,0 +1,23 @@
+[workspace]
+resolver="3"
+members=["crates/*"]
+
+[workspace.lints.clippy]
+# During the audit phase keep these as "warn" so the build is not broken.
+# Promote to "deny" once the count reaches zero.
+# Explicit panics
+unwrap_used              = "warn"
+expect_used              = "warn"
+panic                    = "warn"
+unwrap_in_result         = "warn"
+get_unwrap               = "warn"
+# Implicit panics
+indexing_slicing         = "warn"
+string_slice             = "warn"
+# Unfinished code reaching prod
+todo                     = "warn"
+unimplemented            = "warn"
+unreachable              = "warn"
+# Overflow (noisy — enable if you handle numeric code)
+arithmetic_side_effects  = "warn"
+float_arithmetic         = "warn"
