@@ -35,7 +35,7 @@ Known lints (all candidates when --all-lints is used):
   Overflow:          arithmetic_side_effects, float_arithmetic
 
 Usage:
-    python3 audit_lints.py [--manifest-path PATH] [--json] [--no-clean] [-v]
+    python3 audit_lints.py [--manifest-path PATH] [--json] [--clean] [-v]
                            [--sort metrics|name] [--all-lints]
 """
 
@@ -156,7 +156,8 @@ def parse_args():
     )
     p.add_argument("--manifest-path", default="Cargo.toml")
     p.add_argument("--json", action="store_true")
-    p.add_argument("--no-clean", action="store_true")
+    p.add_argument("--clean", action="store_true",
+                   help="Run 'cargo clean' before each clippy pass (slower but guarantees a cold build)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument(
         "--sort", choices=["metrics", "name"], default="metrics",
@@ -202,7 +203,6 @@ def run_clippy(manifest, *, include_tests, verbose, lints):
         "cargo", "clippy",
         "--manifest-path", manifest,
         "--message-format=json",
-        "-j", "1",
     ]
     if include_tests:
         cmd.append("--tests")
@@ -386,13 +386,13 @@ def main():
             print(f"      Use --all-lints to audit all {len(LINTS)} built-in lints.\n")
 
     print("\n[1/2] Auditing without test targets")
-    if not args.no_clean:
+    if args.clean:
         cargo_clean(manifest, args.verbose)
     no_test = run_clippy(manifest, include_tests=False, verbose=args.verbose,
                          lints=active_lints)
 
     print("\n[2/2] Auditing with test targets")
-    if not args.no_clean:
+    if args.clean:
         cargo_clean(manifest, args.verbose)
     with_test = run_clippy(manifest, include_tests=True, verbose=args.verbose,
                            lints=active_lints)

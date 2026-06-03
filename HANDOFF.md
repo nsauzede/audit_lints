@@ -176,7 +176,7 @@ python3 audit_lints.py --all-lints              # audit all built-in lints regar
 python3 audit_lints.py --sort name              # alphabetical — stable for diff
 python3 audit_lints.py --json                   # JSON output
 python3 audit_lints.py --manifest-path path/to/Cargo.toml
-python3 audit_lints.py --no-clean               # skip cargo clean (faster, less stable)
+python3 audit_lints.py --clean                  # force cargo clean before each pass (cold build)
 python3 audit_lints.py -v                       # show clippy stderr
 ```
 
@@ -198,12 +198,15 @@ handled; only the `level` key is consulted.
 
 T = P+T − P, computed in Python.
 
-**`cargo clean` before each pass** (`--no-clean` to skip): prevents incremental cache
-from pass 1 bleeding into pass 2 — test-target artifacts reuse prod artifacts and can
-cause diagnostics to be silently skipped on the second run.
+**`cargo clean` is opt-in (`--clean`):**
+Omitting `cargo clean` between passes is safe in practice — clippy re-evaluates
+diagnostics from source on every invocation regardless of the incremental cache.
+Pass `--clean` only if you suspect stale artifacts are skewing results (rare).
 
-**`-j 1`**: deterministic diagnostic order across runs → raw JSON and `--json` output
-are diffable.
+**No `-j 1`**: Cargo's default parallelism is used. `-j 1` was a holdover from
+early shell-script experiments where deterministic stderr order mattered; the JSON
+message stream is already keyed by `package_id` so parallel builds produce identical
+counts.
 
 **No `-A clippy::all`**: placing `-A` after `-W` on the command line makes the allow
 win, silencing everything and producing zero results with no error. Only `-W` flags.
@@ -266,7 +269,8 @@ two lints. The P count is still useful for tracking overflow risks in prod code.
 | `-A clippy::all` after `-W clippy::lint` | Zero results, no error | Remove `-A clippy::all` entirely |
 | `stderr=PIPE` unused | Process hangs on large projects | Use `stderr=DEVNULL` |
 | `--all-targets` instead of `--tests` | Inconsistent counts | Use `--tests` for pass 2 only |
-| No `cargo clean` between passes | Test-only warnings missing | Clean before each pass |
+| `--clean` needed for correctness | Myth — clippy re-checks from source every run | `--clean` is never required for correct counts; omit it |
+| `-j 1` needed for stable counts | Myth — JSON stream is keyed by package_id | Drop `-j 1`; parallel builds give identical results |
 | Old vs new `package_id` format | Full path shown as crate name | Handle both formats in `crate_name()` |
 | `v[0]` in panic demo | `indexing_slicing` double-counts | Return constant instead of indexing |
 | `.get().unwrap()` in unwrap demo | `get_unwrap` double-counts | Use `parse().ok().unwrap()` instead |
@@ -294,7 +298,16 @@ mode immediately once step 3 is done.
 
 ## Changelog
 
-### v2 — workspace-driven lint selection
+### v3 — performance defaults
+
+- **`--no-clean` is now the default.** `cargo clean` between passes is not required
+  for correct results — clippy re-evaluates diagnostics from source on every run.
+  The old default was a holdover from naive shell-script experiments. Pass `--clean`
+  explicitly if you ever need a guaranteed cold build.
+- **`-j 1` removed.** Cargo's default parallelism is used. `-j 1` existed only to
+  produce deterministic stderr order, which was never needed once the tool switched
+  to parsing JSON `--message-format` output (keyed by `package_id`).
+- Combined effect: typical run time drops ~420× on a warm cache.
 
 - **Default mode now reads `[workspace.lints.clippy]`** and audits only lints set to
   `"warn"` or `"deny"`.  This eliminates auditing lints the workspace has not opted

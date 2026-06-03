@@ -6,7 +6,7 @@ Refer to [HANDOFF.md](HANDOFF.md) for more information.
 
 ```shell
 $ cd ws
-$ ../audit_lints.py
+$ python3 ../audit_lints.py
 
 [1/2] Auditing without test targets
   › cargo clean …
