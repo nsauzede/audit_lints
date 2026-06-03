@@ -38,7 +38,64 @@ LINTS = [
 ]
 ```
 
-All passed as `-W clippy::lint` flags on the command line. **No `clippy.toml` needed.**
+`LINTS` is the **canonical candidate list** — every lint this tool knows about.
+At runtime the tool selects which subset to actually audit (see Lint selection below).
+
+All selected lints are passed as `-W clippy::lint` flags on the command line.
+**No `clippy.toml` needed.**
+
+---
+
+## Lint selection: workspace-driven vs all-lints
+
+### Default behaviour (workspace-driven)
+
+By default the tool reads `[workspace.lints.clippy]` from the workspace
+`Cargo.toml` and audits **only the lints that are set to `"warn"` or `"deny"`**.
+This keeps the audit honest: if a lint is not enabled in the workspace config,
+clippy would never surface it in a normal build, so auditing it creates noise.
+
+The tool uses Python's stdlib `tomllib` (≥ 3.11) or the third-party `tomli` package
+(Python ≤ 3.10) to parse the manifest.  If neither is available, or if the manifest
+has no `[workspace.lints.clippy]` section, the tool falls back to the full `LINTS`
+list with a printed notice.
+
+The startup banner shows which lints are active and which were skipped:
+
+```
+Mode: workspace-enabled lints only (12 active)
+      Use --all-lints to audit all 12 built-in lints.
+```
+
+Or, if some lints are disabled in the workspace:
+
+```
+Mode: workspace-enabled lints only (10 active, 2 skipped)
+      Skipped (not warn/deny in workspace): arithmetic_side_effects, float_arithmetic
+      Use --all-lints to audit all 12 built-in lints.
+```
+
+### `--all-lints` flag
+
+Pass `--all-lints` to force the tool to audit every lint in `LINTS` regardless of
+the workspace configuration.  Useful when you want to survey lints before enabling
+them, or when the workspace has no `[workspace.lints.clippy]` section.
+
+```bash
+python3 audit_lints.py --all-lints
+```
+
+### Unknown workspace lints (forward compatibility)
+
+If `[workspace.lints.clippy]` contains a lint that is **not** in `LINTS`
+(i.e. a lint this tool doesn't know about yet), the tool:
+
+1. Includes it in the active set so it still gets audited.
+2. Auto-abbreviates its name to 10 chars for the table header.
+3. Does **not** fail — the lint just lacks a curated short label.
+
+This means you can add new lints to the workspace config without touching the script;
+they will be picked up automatically on the next run.
 
 ---
 
@@ -99,129 +156,13 @@ One prod function and one test per lint, **no cross-firing**.
 Cross-firing traps to avoid:
 
 | Lint to isolate    | Trap                                        | Fix                                        |
-|--------------------|---------------------------------------------|--------------------------------------------|
+|--------------------|---------------------------------------------|-------------------------------------------|
 | `unwrap_used`      | `.get().unwrap()` also fires `get_unwrap`   | Use `parse().ok().unwrap()` instead        |
 | `unwrap_in_result` | needs `.unwrap()` on `Result` (not `Option`)| Use `parse::<i32>().unwrap()` in `->Result`|
 | `indexing_slicing` | `v[0]` in `demo_panic` double-fires         | Return constant `42` after the panic guard |
 | `test_unwrap_used` | `.get().unwrap()` also fires `get_unwrap`   | Use `parse().ok().unwrap()` in test too    |
 
-```rust
-use std::num::ParseIntError;
-
-// ── prod: one lint each ───────────────────────────────────────────────────────
-
-fn demo_unwrap(s: &str) -> i32 {
-    s.parse::<i32>().ok().unwrap()                              // unwrap_used
-}
-fn demo_expect(s: &str) -> i32 {
-    s.parse::<i32>().ok().expect("must be a number")            // expect_used
-}
-fn demo_panic(v: &[i32]) -> i32 {
-    if v.is_empty() { panic!("empty slice"); }                  // panic
-    42
-}
-fn demo_unwrap_in_result(s: &str) -> Result<i32, ParseIntError> {
-    let n = s.parse::<i32>().unwrap();                          // unwrap_in_result
-    Ok(n * 2)
-}
-fn demo_get_unwrap(v: &[i32]) -> i32 {
-    *v.get(0).unwrap()                                          // get_unwrap
-}
-fn demo_indexing(v: &[i32]) -> i32 {
-    v[0]                                                        // indexing_slicing
-}
-fn demo_string_slice(s: &str) -> &str {
-    &s[0..1]                                                    // string_slice
-}
-fn demo_todo() -> i32 {
-    todo!("implement me")                                       // todo
-}
-fn demo_unimplemented() -> i32 {
-    unimplemented!("not yet")                                   // unimplemented
-}
-fn demo_unreachable(x: u8) -> i32 {
-    match x { 0 => 0, 1 => 1, _ => unreachable!("only 0|1"),  // unreachable
-    }
-}
-fn demo_arith(a: u8, b: u8) -> u8   { a + b }                  // arithmetic_side_effects
-fn demo_float(a: f32, b: f32) -> f32 { a + b }                 // float_arithmetic
-
-fn main() {
-    let v = vec![1i32, 2, 3];
-    println!("{}", demo_unwrap("21"));
-    println!("{}", demo_expect("21"));
-    println!("{}", demo_panic(&v));
-    println!("{}", demo_unwrap_in_result("21").unwrap_or(0));
-    println!("{}", demo_get_unwrap(&v));
-    println!("{}", demo_indexing(&v));
-    println!("{}", demo_string_slice("hello"));
-    let _ = demo_unreachable(0);
-    println!("{}", demo_arith(1, 2));
-    println!("{}", demo_float(1.0, 2.0));
-    let _ = (demo_todo, demo_unimplemented);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_unwrap_used() {
-        let _ = "1".parse::<i32>().ok().unwrap();               // unwrap_used
-    }
-    #[test]
-    fn test_expect_used() {
-        let _ = "1".parse::<i32>().ok().expect("digit");        // expect_used
-    }
-    #[test]
-    fn test_panic() {
-        let v = vec![1i32, 2, 3];
-        if v.is_empty() { panic!("empty"); }                    // panic
-    }
-    #[test]
-    fn test_unwrap_in_result() -> Result<(), ParseIntError> {
-        let _ = "1".parse::<i32>().unwrap();                    // unwrap_in_result
-        Ok(())
-    }
-    #[test]
-    fn test_get_unwrap() {
-        let v = vec![1i32, 2, 3];
-        let _ = v.get(0).unwrap();                              // get_unwrap
-    }
-    #[test]
-    fn test_indexing_slicing() {
-        let v = vec![1i32, 2, 3]; let _ = v[0];                // indexing_slicing
-    }
-    #[test]
-    fn test_string_slice() {
-        let _ = &"hello"[0..1];                                 // string_slice
-    }
-    #[test]
-    fn test_todo() {
-        let f: fn() -> i32 = || todo!("test"); let _ = f;      // todo
-    }
-    #[test]
-    fn test_unimplemented() {
-        let f: fn() -> i32 = || unimplemented!(); let _ = f;   // unimplemented
-    }
-    #[test]
-    fn test_unreachable() {
-        let x: u8 = 0;
-        let _ = match x { 0=>0, 1=>1, _=>unreachable!() };     // unreachable
-    }
-    #[test]
-    fn test_arith() {
-        // arithmetic_side_effects does NOT fire inside #[test] bodies — by design.
-        // Just call the prod fn to exercise the code path; T will always be 0.
-        let _ = demo_arith(1, 2);
-    }
-    #[test]
-    fn test_float() {
-        // Same: float_arithmetic does not fire in #[test] bodies.
-        let _ = demo_float(1.0, 2.0);
-    }
-}
-```
+(See `ws/crates/lints_demo/src/main.rs` for the full source.)
 
 ---
 
@@ -230,7 +171,8 @@ mod tests {
 ### Usage
 
 ```bash
-python3 audit_lints.py                          # pretty table, sort by metrics (default)
+python3 audit_lints.py                          # workspace-enabled lints only (default)
+python3 audit_lints.py --all-lints              # audit all built-in lints regardless of workspace
 python3 audit_lints.py --sort name              # alphabetical — stable for diff
 python3 audit_lints.py --json                   # JSON output
 python3 audit_lints.py --manifest-path path/to/Cargo.toml
@@ -239,6 +181,16 @@ python3 audit_lints.py -v                       # show clippy stderr
 ```
 
 ### Key design decisions
+
+**Workspace-driven lint selection (new in v2):**
+Parse `[workspace.lints.clippy]` with `tomllib` (stdlib ≥ 3.11) or `tomli`.
+Only lints set to `"warn"` or `"deny"` are audited.  This ensures the audit
+reflects what clippy actually enforces, not a superset that may include lints the
+project has deliberately left disabled.  `--all-lints` restores the v1 behaviour.
+
+**TOML value handling:** the workspace config may use either a plain string
+(`"warn"`) or an inline table (`{ level = "warn", priority = -1 }`).  Both are
+handled; only the `level` key is consulted.
 
 **Two clippy passes:**
 1. `cargo clippy -j 1` — prod targets only → P column
@@ -269,10 +221,31 @@ its buffer before stdout is consumed.
 ### Expected output on the demo workspace
 
 ```
+Mode: workspace-enabled lints only (12 active)
+      Use --all-lints to audit all 12 built-in lints.
+
+[1/2] Auditing without test targets
+  › cargo clean …
+  › cargo clippy (no tests) …
+
+[2/2] Auditing with test targets
+  › cargo clean …
+  › cargo clippy (with tests) …
+
 crate          unwrap  expect   panic  unwrap_res  get_unwrap  idx_slice  str_slice  todo  unimpl  unreach  arith  float   TOTAL
                 P P+T T  P P+T T  P P+T T  P P+T T  P P+T T  P P+T T  P P+T T  P P+T T  P P+T T  P P+T T  P P+T T  P P+T T  P P+T T
 lints_demo     3   6 3  1   2 1  1   2 1  1   2 1  1   2 1  1   2 1  1   2 1  1   2 1  1   2 1  1   2 1  1   1 0  1   1 0  14  26 12
 ```
+
+When `arithmetic_side_effects` and `float_arithmetic` are commented out or set to
+`"allow"` in the workspace Cargo.toml, the run reports:
+
+```
+Mode: workspace-enabled lints only (10 active, 2 skipped)
+      Skipped (not warn/deny in workspace): arithmetic_side_effects, float_arithmetic
+```
+
+…and the table has 10 lint columns instead of 12.
 
 **`unwrap P=3` is expected:** `unwrap_used` fires on every `.unwrap()` call site,
 including those inside `demo_unwrap_in_result` and `demo_get_unwrap`. One call site
@@ -301,6 +274,8 @@ two lints. The P count is still useful for tracking overflow risks in prod code.
 | `test_helper_arith` outside `#[cfg(test)]` | Adds extra P hits | Don't add helper fns — T=0 is correct |
 | `arith`/`float` T always 0 | Looks like a bug | It's by design — restriction lints skip `#[test]` bodies |
 | `Ok(n * 2)` in `demo_unwrap_in_result` | `arith` P=2 unexpectedly | Any arithmetic in prod code counts — use `Ok(n)` |
+| tomllib absent on Python ≤ 3.10 | Falls back to all lints | `pip install tomli` or use Python 3.11+ |
+| Workspace lint as inline table `{level="warn"}` | Level not detected | Handled: dict path reads `.get("level")` |
 
 ---
 
@@ -308,8 +283,30 @@ two lints. The P count is still useful for tracking overflow risks in prod code.
 
 1. Append its name to `LINTS` in `audit_lints.py`
 2. Add a short label to `LINT_SHORT`
-3. Add the lint under `[workspace.lints.clippy]` in `ws/Cargo.toml`
+3. Add the lint under `[workspace.lints.clippy]` in `ws/Cargo.toml` (set to `"warn"`)
 4. Add a prod function and a test in `main.rs` that fire it in isolation
 
 No other changes needed — table, JSON output, and clippy invocation all derive from
-`LINTS` automatically.
+the active lint list automatically.  The new lint will be picked up in workspace-driven
+mode immediately once step 3 is done.
+
+---
+
+## Changelog
+
+### v2 — workspace-driven lint selection
+
+- **Default mode now reads `[workspace.lints.clippy]`** and audits only lints set to
+  `"warn"` or `"deny"`.  This eliminates auditing lints the workspace has not opted
+  into, preventing false-negatives where a lint is "enabled" in the audit but
+  `allow`-ed in the workspace (producing zero hits that look like clean code).
+- **`--all-lints` flag** restores the v1 behaviour: audit every lint in `LINTS`
+  regardless of the workspace configuration.
+- Startup banner reports the active lint set and any skipped lints.
+- `merge()`, `run_clippy()`, `print_table()`, and `print_json()` now accept an
+  explicit `lints` parameter instead of relying on the module-level `LINTS` constant,
+  making the active set explicit throughout.
+- Forward-compatible: workspace lints not in `LINTS` are auto-included and
+  auto-abbreviated rather than silently ignored.
+- Graceful degradation when `tomllib`/`tomli` is unavailable: falls back to all lints
+  with a printed warning.
